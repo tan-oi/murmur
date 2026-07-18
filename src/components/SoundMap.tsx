@@ -1,73 +1,90 @@
-import maplibregl from "maplibre-gl";
+import Map, { Marker } from "react-map-gl/maplibre";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { useEffect, useRef } from "react";
-import { Cassette } from "./Casette";
-import { createRoot } from "react-dom/client";
-import { loadAgedPaperPositronStyle } from "#/lib/aged-paper-style";
+import { useState, useRef } from "react";
+import { Cassette } from "./Cassette";
+import type { SoundPin } from "#/lib/pins";
 
-export function SoundMap() {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!ref.current) return;
-    const controller = new AbortController();
-    let map: maplibregl.Map | undefined;
+export function SoundMap({
+  pins,
+  placing = false,
+  draft = null,
+  onPickLocation,
+}: {
+  pins: SoundPin[];
+  placing?: boolean;
+  draft?: { lng: number; lat: number } | null;
+  onPickLocation?: (lng: number, lat: number) => void;
+}) {
+  const [zoom, setZoom] = useState(12);
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
-    void loadAgedPaperPositronStyle(controller.signal)
-      .then((style) => {
-        if (controller.signal.aborted || !ref.current) return;
+  const handleClick = (pin: SoundPin) => {
+    if (placing) return; // while placing, clicks belong to the map
 
-        map = new maplibregl.Map({
-          container: ref.current,
-          style,
-          center: [88.3639, 22.5726],
-          zoom: 12,
-        });
-        const pins = [
-          {
-            id: 1,
-            title: "Park Street",
-            lng: 88.352,
-            lat: 22.551,
-            audioUrl: "/test.mp3",
-          },
-          {
-            id: 2,
-            title: "Howrah Bridge",
-            lng: 88.3468,
-            lat: 22.5851,
-            audioUrl: "/test2.mp3",
-          },
-        ];
+    // stop whatever's playing
+    if (audioRef.current) audioRef.current.pause();
 
-        pins.forEach((pin) => {
-          const el = document.createElement("div");
-          el.style.cursor = "pointer";
+    if (playingId === pin.id) {
+      // clicking the playing one again = stop it
+      setPlayingId(null);
+      return;
+    }
 
-          // draw the React cassette into that div
-          createRoot(el).render(<Cassette isPlaying={false} />);
+    // play the new one
+    const audio = new Audio(pin.audioUrl);
+    audioRef.current = audio;
+    audio.play();
+    setPlayingId(pin.id);
 
-          // hand the div to MapLibre as the marker
-          new maplibregl.Marker({ element: el, anchor: "bottom" })
-            .setLngLat([pin.lng, pin.lat])
-            .addTo(map);
+    audio.onended = () => setPlayingId(null);
+  };
 
-          const audio = new Audio(pin.audioUrl);
-          el.addEventListener("click", () => audio.play());
-        });
-      })
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
-          console.error(
-            "Unable to initialize the aged-paper map style.",
-            error
-          );
-        }
-      });
+  return (
+    <Map
+      onZoom={(e) => setZoom(e.viewState.zoom)}
+      initialViewState={{ longitude: 88.3639, latitude: 22.5726, zoom: 12 }}
+      style={{ width: "100%", height: "100vh" }}
+      mapStyle="https://tiles.openfreemap.org/styles/positron"
+      cursor={placing ? "crosshair" : "auto"}
+      onClick={(e) => {
+        if (placing && onPickLocation)
+          onPickLocation(e.lngLat.lng, e.lngLat.lat);
+      }}
+    >
+      {pins.map((pin, i) => {
+        const scale = Math.max(0.5, Math.min(1.4, (zoom - 10) * 0.35));
+        return (
+          <Marker
+            key={pin.id}
+            longitude={pin.lng}
+            latitude={pin.lat}
+            anchor="bottom"
+          >
+            <div
+              onClick={() => handleClick(pin)}
+              style={{
+                transform: `scale(${scale})`,
+                transformOrigin: "bottom center",
+              }}
+            >
+              <Cassette
+                isPlaying={playingId === pin.id}
+                label={String(i + 1).padStart(2, "0")}
+              />
+            </div>
+          </Marker>
+        );
+      })}
 
-    return () => {
-      controller.abort();
-      map?.remove();
-    };
-  }, []);
-  return <div ref={ref} style={{ width: "100%", height: "100vh" }} />;
+      {draft && (
+        <Marker longitude={draft.lng} latitude={draft.lat} anchor="center">
+          <div className="relative flex size-6 items-center justify-center">
+            <span className="absolute inset-0 rounded-full border-2 border-rec animate-[drop-pulse_1.6s_var(--ease-out-quart)_infinite]" />
+            <span className="size-2.5 rounded-full bg-rec ring-2 ring-paper" />
+          </div>
+        </Marker>
+      )}
+    </Map>
+  );
 }

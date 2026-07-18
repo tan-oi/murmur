@@ -1,5 +1,21 @@
 @import "tailwindcss";
 
+@theme {
+  /* the cassette's own palette, promoted to UI tokens */
+  --color-paper: #f1ead8;
+  --color-paper-dim: #e4dbc4;
+  --color-inkbrown: #3a2a1c;
+  --color-shell: #5a3a26;
+  --color-shell-deep: #2a1b10;
+  --color-tape: #8b6a4a;
+  --color-rec: #912525;
+  --color-rec-deep: #5a1414;
+
+  --font-hand: "Caveat", cursive;
+
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -31,5 +47,37 @@ body {
   }
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes rec-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) rotate(-0.6deg);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) rotate(-0.6deg);
+  }
+}
+
+@keyframes drop-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
   }
 }
