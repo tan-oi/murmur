@@ -13,12 +13,15 @@ import type { City } from "#/lib/cities";
 function ClusteredMarkers({
   pins,
   zoom,
+  moveTick,
   activePinId,
   placing,
   onSelectPin,
 }: {
   pins: SoundPin[];
   zoom: number;
+  /** bumped on every pan/zoom/rotate so clusters recompute for the new viewport */
+  moveTick: number;
   activePinId: string | null;
   placing: boolean;
   onSelectPin?: (pin: SoundPin, index: number) => void;
@@ -34,7 +37,8 @@ function ClusteredMarkers({
       [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()],
       Math.round(zoom),
     );
-  }, [index, map, zoom]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- moveTick stands in for the bounds, which change on every pan
+  }, [index, map, zoom, moveTick]);
 
   const scale = Math.max(0.5, Math.min(1.4, (zoom - 10) * 0.35));
 
@@ -135,12 +139,16 @@ export function SoundMap({
   onSelectPin?: (pin: SoundPin, index: number) => void;
 }) {
   const [zoom, setZoom] = useState(city.zoom);
+  const [moveTick, setMoveTick] = useState(0);
 
   return (
     <Map
       id="murmur"
       key={city.id}
-      onZoom={(e) => setZoom(e.viewState.zoom)}
+      onMove={(e) => {
+        setZoom(e.viewState.zoom);
+        setMoveTick((t) => t + 1); // pan alone doesn't change zoom — force a recompute
+      }}
       initialViewState={{
         longitude: city.center[0],
         latitude: city.center[1],
@@ -158,6 +166,7 @@ export function SoundMap({
       <ClusteredMarkers
         pins={pins}
         zoom={zoom}
+        moveTick={moveTick}
         activePinId={activePinId}
         placing={placing}
         onSelectPin={onSelectPin}
