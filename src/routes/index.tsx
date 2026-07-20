@@ -1,44 +1,68 @@
-import { ClientOnly, createFileRoute, useRouter } from "@tanstack/react-router";
+import { ClientOnly, createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
+import { useSelector } from "@xstate/react";
 import { SoundMap } from "#/components/SoundMap";
-import { Recorder, type DraftLocation } from "#/components/Recorder";
-import { getPins, uploadPin } from "#/server/functions";
+import { Recorder } from "#/components/Recorder";
+import { PlaybackDialog } from "#/components/PlaybackDialog";
+import { CityToggle } from "#/components/CityToggle";
+import { getPins } from "#/server/functions";
+import { inputActor, playerActor } from "#/machines/actors/app";
+import type { SoundPin } from "#/lib/pins";
+import { loadAgedPaperPositronStyle } from "#/lib/aged-paper-style";
+import { CITIES, DEFAULT_CITY } from "#/lib/cities";
 
 export const Route = createFileRoute("/")({
-  loader: () => getPins(),
+  loader: async () => {
+    const [pins, mapStyle] = await Promise.all([
+      getPins(),
+      loadAgedPaperPositronStyle(),
+    ]);
+    return { pins, mapStyle };
+  },
   component: Home,
 });
 
 function Home() {
-  const pins = Route.useLoaderData();
-  const router = useRouter();
-  const [placing, setPlacing] = useState(false);
-  const [draft, setDraft] = useState<DraftLocation | null>(null);
+  const { pins, mapStyle } = Route.useLoaderData();
+  const placing = useSelector(inputActor, (s) => s.matches("placing"));
+  const location = useSelector(inputActor, (s) => s.context.location);
+  // reels spin on whichever cassette the deck is actually sounding
+  const playingKey = useSelector(playerActor, (s) =>
+    s.matches("playing") ? s.context.key : null,
+  );
+  const [selected, setSelected] = useState<{
+    pin: SoundPin;
+    index: number;
+  } | null>(null);
+  const [cityId, setCityId] = useState(DEFAULT_CITY.id);
+  const city = CITIES.find((c) => c.id === cityId) ?? DEFAULT_CITY;
 
   return (
     <ClientOnly fallback={<div className="p-8">Loading map...</div>}>
       <div className="relative">
         <SoundMap
           pins={pins}
+          city={city}
+          mapStyle={mapStyle}
+          activePinId={
+            playingKey?.startsWith("pin-") ? playingKey.slice(4) : null
+          }
           placing={placing}
-          draft={draft}
-          onPickLocation={(lng, lat) => setDraft({ lng, lat })}
+          draft={placing ? location : null}
+          onPickLocation={(lng, lat) =>
+            inputActor.send({ type: "PICK", lng, lat })
+          }
+          onSelectPin={(pin, index) => setSelected({ pin, index })}
         />
-        <Recorder
-          draft={draft}
-          onPlacingChange={setPlacing}
-          onCancel={() => setDraft(null)}
-          onSave={async ({ blob }) => {
-            if (!draft) return;
-            const form = new FormData();
-            form.append("audio", blob, "recording");
-            form.append("lng", String(draft.lng));
-            form.append("lat", String(draft.lat));
-            await uploadPin({ data: form });
-            await router.invalidate(); // reload pins → new cassette appears
-            setDraft(null);
-          }}
-        />
+        <CityToggle activeId={city.id} onSelect={setCityId} />
+        <Recorder />
+        {selected && (
+          <PlaybackDialog
+            pin={selected.pin}
+            index={selected.index}
+            onClose={() => setSelected(null)}
+          />
+        )}
       </div>
     </ClientOnly>
   );

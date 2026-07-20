@@ -1,26 +1,25 @@
-export function Cassette({
+// Cluster marker matching the refined Cassette look (spaced reels, layered
+// tape, label strip, sheen) — with a count badge showing how many sounds
+// are grouped. Visual only; supercluster renders this for cluster points.
+
+export function ClusterCassette({
+  count,
   isPlaying = false,
-  label = "1",
-  size = 48,
+  size = 56,
+  onClick,
 }: {
+  count: number;
   isPlaying?: boolean;
-  label?: string;
   size?: number;
+  onClick?: () => void;
 }) {
   const shellTop = isPlaying ? "#912525" : "#5A3A26";
   const shellBot = isPlaying ? "#5A1414" : "#3E2818";
   const shellDark = isPlaying ? "#4A0F0F" : "#2A1B10";
-  // keep the animation running but paused (not removed) so a stopped reel
-  // freezes at its current angle instead of snapping back to 0deg
-  const reelAnimStyle: React.CSSProperties = {
-    animation: "reel 0.85s linear infinite",
-    animationPlayState: isPlaying ? "running" : "paused",
-  };
+  const reelAnim = isPlaying ? "reel 0.85s linear infinite" : "none";
 
-  // unique gradient ids so multiple cassettes on one page don't clash
-  const uid = `${isPlaying ? "p" : "i"}${label}`;
-  const shellGrad = `shell-${uid}`;
-  const reelGrad = `reel-${uid}`;
+  const badgeR = count >= 100 ? 13 : count >= 10 ? 12 : 11;
+  const badgeFont = count >= 100 ? 9 : 11;
 
   return (
     <svg
@@ -28,13 +27,14 @@ export function Cassette({
       height={size * (66 / 80)}
       viewBox="0 0 80 66"
       style={{ cursor: "pointer", overflow: "visible" }}
+      onClick={onClick}
     >
       <defs>
-        <linearGradient id={shellGrad} x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id="cl-shell" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0" stopColor={shellTop} />
           <stop offset="1" stopColor={shellBot} />
         </linearGradient>
-        <radialGradient id={reelGrad} cx="0.4" cy="0.35" r="0.7">
+        <radialGradient id="cl-reel" cx="0.4" cy="0.35" r="0.7">
           <stop offset="0" stopColor="#3A2418" />
           <stop offset="1" stopColor="#160A04" />
         </radialGradient>
@@ -44,7 +44,7 @@ export function Cassette({
       <ellipse cx="40" cy="62" rx="12" ry="2.5" fill="#3A2A1C" opacity="0.2" />
 
       {/* pointer tail */}
-      <path d="M40 60 L33 48 L47 48 Z" fill={`url(#${shellGrad})`} />
+      <path d="M40 60 L33 48 L47 48 Z" fill="url(#cl-shell)" />
       <path
         d="M40 60 L33 48 L47 48 Z"
         fill="none"
@@ -52,15 +52,8 @@ export function Cassette({
         strokeWidth="1.5"
       />
 
-      {/* shell with gradient */}
-      <rect
-        x="4"
-        y="4"
-        width="72"
-        height="46"
-        rx="6"
-        fill={`url(#${shellGrad})`}
-      />
+      {/* shell */}
+      <rect x="4" y="4" width="72" height="46" rx="6" fill="url(#cl-shell)" />
       <rect
         x="4"
         y="4"
@@ -71,7 +64,7 @@ export function Cassette({
         stroke={shellDark}
         strokeWidth="1.5"
       />
-      {/* top sheen */}
+      {/* sheen */}
       <rect
         x="7"
         y="6"
@@ -111,26 +104,20 @@ export function Cassette({
         fontFamily="monospace"
         textAnchor="end"
       >
-        {label}
+        {count} sounds
       </text>
 
-      {/* flat line when idle; singing waveform while the deck is spinning */}
-      <path
-        d="M16 20 h30"
-        stroke={shellBot}
-        strokeWidth="1"
-        fill="none"
-        strokeLinecap="round"
+      {/* label body: "a bundle of tapes" note */}
+      <text
+        x="40"
+        y="21"
+        textAnchor="middle"
+        fontSize="7"
+        fill="#3A2A1C"
+        fontFamily="'Caveat', cursive"
       >
-        {isPlaying && (
-          <animate
-            attributeName="d"
-            values="M16 20 h30;M16 20 q3 -2.5 6 0 t6 0 t6 0 t6 0 t6 0;M16 20 q3 2.5 6 0 t6 0 t6 0 t6 0 t6 0;M16 20 q3 -2.5 6 0 t6 0 t6 0 t6 0 t6 0;M16 20 h30"
-            dur="0.6s"
-            repeatCount="indefinite"
-          />
-        )}
-      </path>
+        {count} recordings here
+      </text>
 
       {/* window */}
       <rect x="16" y="28" width="48" height="18" rx="3" fill={shellDark} />
@@ -144,9 +131,9 @@ export function Cassette({
         opacity="0.55"
       />
 
-      {/* left reel — layered tape (fuller) */}
-      <g style={{ transformOrigin: "28px 37px", ...reelAnimStyle }}>
-        <circle cx="28" cy="37" r="8" fill={`url(#${reelGrad})`} />
+      {/* left reel (fuller) */}
+      <g style={{ transformOrigin: "28px 37px", animation: reelAnim }}>
+        <circle cx="28" cy="37" r="8" fill="url(#cl-reel)" />
         <circle
           cx="28"
           cy="37"
@@ -173,9 +160,9 @@ export function Cassette({
         <circle cx="30" cy="37" r="2" fill="#F1EAD8" />
       </g>
 
-      {/* right reel — layered tape (emptier) */}
-      <g style={{ transformOrigin: "52px 37px", ...reelAnimStyle }}>
-        <circle cx="50" cy="37" r="8" fill={`url(#${reelGrad})`} />
+      {/* right reel (emptier) */}
+      <g style={{ transformOrigin: "52px 37px", animation: reelAnim }}>
+        <circle cx="50" cy="37" r="8" fill="url(#cl-reel)" />
         <circle
           cx="52"
           cy="37"
@@ -208,6 +195,27 @@ export function Cassette({
       {/* screws */}
       <circle cx="11" cy="46" r="1.4" fill={shellDark} />
       <circle cx="69" cy="46" r="1.4" fill={shellDark} />
+
+      {/* count badge */}
+      <circle cx="66" cy="10" r={badgeR} fill="#7A1F1F" />
+      <circle
+        cx="66"
+        cy="10"
+        r={badgeR}
+        fill="none"
+        stroke="#EBE3D2"
+        strokeWidth="1.5"
+      />
+      <text
+        x="66"
+        y={10 + badgeFont / 3}
+        textAnchor="middle"
+        fontSize={badgeFont}
+        fill="#F4EEDD"
+        fontFamily="monospace"
+      >
+        {count}
+      </text>
     </svg>
   );
 }

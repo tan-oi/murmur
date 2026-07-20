@@ -1,197 +1,77 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
+import { useRouter } from "@tanstack/react-router";
+import { useSelector } from "@xstate/react";
+import { inputActor, playerActor } from "#/machines/actors/app";
+import type { PinLocation } from "#/machines/actors/input";
+import { uploadPin } from "#/server/functions";
 import { UploadDrop } from "./Uploader";
 
-type Mode =
-  | "idle"
-  | "choose"
-  | "record"
-  | "review"
-  | "place"
-  | "details"
-  | "saved";
+/* Pure rendering over the input machine — all behavior lives in
+   machines/actors/input.ts. No effects: subscriptions go through
+   useSelector, and window/canvas work uses React 19 ref-callback
+   cleanups. */
 
-export type DraftLocation = { lng: number; lat: number };
+const send = inputActor.send;
 
-export function Recorder({
-  draft,
-  onPlacingChange,
-  onCancel,
-  onSave,
-}: {
-  draft: DraftLocation | null;
-  onPlacingChange: (placing: boolean) => void;
-  onCancel: () => void;
-  onSave: (entry: { blob: Blob }) => Promise<void>;
-}) {
-  const [mode, setMode] = useState<Mode>("idle");
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [seconds, setSeconds] = useState(0);
-  const [micError, setMicError] = useState(false);
-  const [title, setTitle] = useState("");
-  const [previewing, setPreviewing] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState(false);
-  const blobRef = useRef<Blob | null>(null);
-
-  // recording machinery lives in refs — none of it should re-render the panel
-  const mediaRef = useRef<MediaRecorder | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const ctxRef = useRef<AudioContext | null>(null);
-  const rafRef = useRef(0);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const traceRef = useRef<number[]>([]);
-  const previewRef = useRef<HTMLAudioElement | null>(null);
-
-  const placing = mode === "place";
-  useEffect(() => {
-    onPlacingChange(placing);
-  }, [placing, onPlacingChange]);
-
-  const stopMachinery = () => {
-    cancelAnimationFrame(rafRef.current);
-    if (mediaRef.current?.state === "recording") mediaRef.current.stop();
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    ctxRef.current?.close().catch(() => {});
-    mediaRef.current = null;
-    streamRef.current = null;
-    ctxRef.current = null;
-    traceRef.current = [];
-  };
-
-  const stopPreview = () => {
-    previewRef.current?.pause();
-    previewRef.current = null;
-    setPreviewing(false);
-  };
-
-  const reset = () => {
-    stopMachinery();
-    stopPreview();
-    setMode("idle");
-    setSeconds(0);
-    setMicError(false);
-    setTitle("");
-    setAudioUrl(null);
-    blobRef.current = null;
-    setSaveError(false);
-    onCancel();
-  };
-
-  // Esc backs out of the whole flow
-  useEffect(() => {
-    if (mode === "idle") return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") reset();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+function drawTrace(canvas: HTMLCanvasElement, trace: number[]) {
+  const c = canvas.getContext("2d");
+  if (!c) return;
+  const { width, height } = canvas;
+  c.clearRect(0, 0, width, height);
+  c.fillStyle = "#3a2a1c";
+  const barW = width / 72;
+  trace.forEach((v, i) => {
+    const h = Math.max(2, v * height * 2.4);
+    c.fillRect(i * barW, (height - h) / 2, barW * 0.6, h);
   });
+}
 
-  useEffect(() => stopMachinery, []);
+export function Recorder() {
+  const router = useRouter();
+  const mode = useSelector(inputActor, (s) => s.value as string);
+  const seconds = useSelector(inputActor, (s) => s.context.seconds);
+  const audioUrl = useSelector(inputActor, (s) => s.context.audioUrl);
+  const location = useSelector(inputActor, (s) => s.context.location);
+  const saveFailed = useSelector(inputActor, (s) => s.context.saveFailed);
+  const previewing = useSelector(
+    playerActor,
+    (s) => s.matches("playing") && s.context.key === "preview",
+  );
+  const [locating, setLocating] = useState(false);
+  const [geoError, setGeoError] = useState(false);
 
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-      });
-      streamRef.current = stream;
-
-      const rec = new MediaRecorder(stream);
-      mediaRef.current = rec;
-      const chunks: Blob[] = [];
-      rec.ondataavailable = (e) => chunks.push(e.data);
-      rec.onstop = () => {
-        const blob = new Blob(chunks, { type: rec.mimeType });
-        blobRef.current = blob;
-        setAudioUrl(URL.createObjectURL(blob));
-        setMode("review");
-      };
-      rec.start();
-
-      // live level trace
-      const ctx = new AudioContext();
-      ctxRef.current = ctx;
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      source.connect(analyser);
-      const buf = new Uint8Array(analyser.fftSize);
-      const started = performance.now();
-
-      const draw = () => {
-        analyser.getByteTimeDomainData(buf);
-        let sum = 0;
-        for (const v of buf) sum += (v - 128) ** 2;
-        const rms = Math.sqrt(sum / buf.length) / 128;
-        const trace = traceRef.current;
-        trace.push(rms);
-        if (trace.length > 72) trace.shift();
-        setSeconds(Math.floor((performance.now() - started) / 1000));
-
-        const canvas = canvasRef.current;
-        const c = canvas?.getContext("2d");
-        if (canvas && c) {
-          const { width, height } = canvas;
-          c.clearRect(0, 0, width, height);
-          c.fillStyle = "#3a2a1c";
-          const barW = width / 72;
-          trace.forEach((v, i) => {
-            const h = Math.max(2, v * height * 2.4);
-            c.fillRect(i * barW, (height - h) / 2, barW * 0.6, h);
-          });
-        }
-        rafRef.current = requestAnimationFrame(draw);
-      };
-      rafRef.current = requestAnimationFrame(draw);
-
-      setSeconds(0);
-      setMode("record");
-    } catch {
-      setMicError(true);
-    }
+  const useMyLocation = () => {
+    setLocating(true);
+    setGeoError(false);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocating(false);
+        send({
+          type: "PICK",
+          lng: pos.coords.longitude,
+          lat: pos.coords.latitude,
+        });
+      },
+      () => {
+        setLocating(false);
+        setGeoError(true);
+      },
+      { enableHighAccuracy: true, timeout: 10_000 },
+    );
   };
 
-  const finishRecording = () => {
-    cancelAnimationFrame(rafRef.current);
-    mediaRef.current?.stop(); // onstop advances to review
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    ctxRef.current?.close().catch(() => {});
-  };
-
-  const togglePreview = () => {
-    if (previewing) {
-      stopPreview();
-      return;
-    }
-    if (!audioUrl) return;
-    const a = new Audio(audioUrl);
-    previewRef.current = a;
-    a.onended = () => setPreviewing(false);
-    a.play();
-    setPreviewing(true);
-  };
-
-  const save = async () => {
-    if (!blobRef.current || !title.trim() || saving) return;
-    stopPreview();
-    setSaving(true);
-    setSaveError(false);
-    try {
-      await onSave({ blob: blobRef.current });
-      setMode("saved");
-      setTimeout(() => {
-        setMode("idle");
-        setTitle("");
-        setAudioUrl(null);
-        blobRef.current = null;
-        setSeconds(0);
-      }, 2200);
-    } catch {
-      setSaveError(true); // take stays intact — user can retry
-    } finally {
-      setSaving(false);
-    }
-  };
+  const confirmSave = () =>
+    send({
+      type: "CONFIRM",
+      save: async (blob: Blob, loc: PinLocation) => {
+        const form = new FormData();
+        form.append("audio", blob, "recording");
+        form.append("lng", String(loc.lng));
+        form.append("lat", String(loc.lat));
+        await uploadPin({ data: form });
+        await router.invalidate(); // reload pins → new cassette appears
+      },
+    });
 
   const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
   const ss = String(seconds % 60).padStart(2, "0");
@@ -200,8 +80,8 @@ export function Recorder({
   if (mode === "idle") {
     return (
       <button
-        onClick={() => setMode("choose")}
-        className="absolute top-6 right-6 -rotate-1 cursor-pointer rounded-sm border-2 border-shell-deep/70 bg-paper px-4 py-2 transition-transform duration-200 ease-[var(--ease-out-quart)] hover:rotate-0 hover:scale-[1.03]"
+        onClick={() => send({ type: "OPEN" })}
+        className="absolute right-4 bottom-4 -rotate-1 cursor-pointer rounded-sm border-2 border-shell-deep/70 bg-paper px-4 py-2 transition-transform duration-200 ease-out-quart hover:rotate-0 hover:scale-[1.03] sm:top-6 sm:right-6 sm:bottom-auto"
       >
         <span className="font-hand text-xl leading-none text-inkbrown">
           + add a sound
@@ -210,30 +90,87 @@ export function Recorder({
     );
   }
 
-  /* ---------- place: get out of the way, let the map speak ---------- */
-  if (mode === "place") {
+  /* ---------- placing: get out of the way, let the map speak ---------- */
+  if (mode === "placing") {
     return (
-      <div className="absolute top-6 right-6 w-72 animate-[slide-in_0.25s_var(--ease-out-quart)] rounded-sm border-2 border-shell-deep/70 bg-paper p-4 -rotate-[0.6deg]">
-        <p className="font-hand text-2xl leading-tight text-inkbrown">
-          where did you hear it?
-        </p>
-        <p className="mt-1 font-mono text-[10px] uppercase tracking-widest text-shell">
-          tap the map to drop the pin
-        </p>
-        {draft && (
-          <div className="mt-3 flex items-center justify-between border-t border-shell/30 pt-3">
-            <span className="font-mono text-[10px] text-shell">
-              {draft.lat.toFixed(4)}°N {draft.lng.toFixed(4)}°E
-            </span>
-            <button
-              onClick={() => setMode("details")}
-              className="cursor-pointer rounded-sm bg-inkbrown px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-paper transition-colors hover:bg-shell"
-            >
-              right here →
-            </button>
-          </div>
-        )}
-        <CancelLink onClick={reset} />
+      <div className="fixed inset-x-0 bottom-0 max-h-[80vh] w-full animate-[slide-in_0.25s_var(--ease-out-quart)] overflow-y-auto rounded-t-2xl border-2 border-shell-deep/70 bg-paper sm:absolute sm:inset-x-auto sm:top-6 sm:right-6 sm:bottom-auto sm:max-h-none sm:w-80 sm:rounded-sm sm:rounded-t-sm sm:rotate-[-0.6deg]">
+        <header className="flex items-center justify-between rounded-t-2xl bg-shell px-3 py-1.5 sm:rounded-t-sm">
+          <span className="font-mono text-[10px] tracking-widest text-paper">
+            ● NEW ENTRY — SIDE A
+          </span>
+          <button
+            onClick={() => send({ type: "CANCEL" })}
+            aria-label="cancel"
+            className="cursor-pointer font-mono text-xs leading-none text-paper/70 transition-colors hover:text-paper"
+          >
+            ✕
+          </button>
+        </header>
+
+        <div className="p-4">
+          <p className="font-hand text-2xl leading-tight text-inkbrown">
+            where did you hear it?
+          </p>
+
+          {!location ? (
+            <div className="mt-3 space-y-2">
+              <div className="flex w-full items-center gap-3 rounded-sm border-2 border-shell-deep/60 px-4 py-3 text-left">
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-paper-dim">
+                  <span className="size-2.5 rounded-full border-2 border-shell" />
+                </span>
+                <span>
+                  <span className="block font-mono text-[11px] uppercase tracking-widest text-inkbrown">
+                    tap the map
+                  </span>
+                  <span className="block font-mono text-[10px] text-shell">
+                    click anywhere to drop the pin there
+                  </span>
+                </span>
+              </div>
+
+              <button
+                onClick={useMyLocation}
+                disabled={locating}
+                className="flex w-full cursor-pointer items-center gap-3 rounded-sm border-2 border-shell-deep/60 bg-paper px-4 py-3 text-left transition-colors hover:bg-paper-dim disabled:cursor-wait disabled:opacity-60"
+              >
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-inkbrown">
+                  <span className="size-2.5 rounded-full bg-paper" />
+                </span>
+                <span>
+                  <span className="block font-mono text-[11px] uppercase tracking-widest text-inkbrown">
+                    {locating ? "finding you…" : "use my location"}
+                  </span>
+                  <span className="block font-mono text-[10px] text-shell">
+                    drop a pin right where you are
+                  </span>
+                </span>
+              </button>
+            </div>
+          ) : (
+            <div className="mt-3 flex items-center justify-between rounded-sm border-2 border-shell-deep/60 px-4 py-3">
+              <span className="font-mono text-[10px] text-shell">
+                {location.lat.toFixed(4)}°N {location.lng.toFixed(4)}°E
+              </span>
+              <button
+                onClick={confirmSave}
+                className="cursor-pointer rounded-sm bg-inkbrown px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-paper transition-colors hover:bg-shell"
+              >
+                right here →
+              </button>
+            </div>
+          )}
+
+          {geoError && (
+            <p className="mt-2 font-mono text-[11px] text-rec" role="alert">
+              couldn't get your location — tap the map instead.
+            </p>
+          )}
+          {saveFailed && (
+            <p className="mt-2 font-mono text-[11px] text-rec" role="alert">
+              couldn't reach the archive — your take is safe, try again.
+            </p>
+          )}
+        </div>
       </div>
     );
   }
@@ -242,13 +179,22 @@ export function Recorder({
   return (
     <section
       aria-label="add a sound"
-      className="absolute top-6 right-6 w-80 animate-[slide-in_0.25s_var(--ease-out-quart)] rounded-sm border-2 border-shell-deep/70 bg-paper -rotate-[0.6deg]"
+      ref={(el) => {
+        if (!el) return;
+        // Esc backs out of the whole flow (ref cleanup, not an effect)
+        const onKey = (e: KeyboardEvent) => {
+          if (e.key === "Escape") send({ type: "CANCEL" });
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      }}
+      className="fixed inset-x-0 bottom-0 z-10 max-h-[85vh] w-full animate-[slide-in_0.25s_var(--ease-out-quart)] overflow-y-auto rounded-t-2xl border-2 border-shell-deep/70 bg-paper sm:absolute sm:inset-x-auto sm:top-6 sm:right-6 sm:bottom-auto sm:z-auto sm:max-h-none sm:w-80 sm:rounded-sm sm:rotate-[-0.6deg]"
     >
       {/* label strip, borrowed from the cassette itself */}
-      <header className="flex items-center justify-between rounded-t-[1px] bg-shell px-3 py-1.5">
+      <header className="flex items-center justify-between rounded-t-2xl bg-shell px-3 py-1.5 sm:rounded-t-sm">
         <span className="font-mono text-[10px] tracking-widest text-paper">
-          {mode === "record" ? (
-            <span className="text-[#f1ead8]">
+          {mode === "recording" ? (
+            <span>
               <span className="mr-1 inline-block animate-[rec-blink_1.2s_steps(1)_infinite] text-[#ff9a9a]">
                 ●
               </span>
@@ -259,7 +205,7 @@ export function Recorder({
           )}
         </span>
         <button
-          onClick={reset}
+          onClick={() => send({ type: "CANCEL" })}
           aria-label="cancel"
           className="cursor-pointer font-mono text-xs leading-none text-paper/70 transition-colors hover:text-paper"
         >
@@ -268,13 +214,16 @@ export function Recorder({
       </header>
 
       <div className="p-4">
-        {mode === "choose" && (
+        {mode === "choosing" && (
           <div className="space-y-3">
             <p className="font-hand text-2xl leading-tight text-inkbrown">
               what does your place sound like?
             </p>
             <button
-              onClick={startRecording}
+              onClick={() => {
+                playerActor.send({ type: "STOP" }); // don't record over playing audio
+                send({ type: "RECORD" });
+              }}
               className="flex w-full cursor-pointer items-center gap-3 rounded-sm border-2 border-shell-deep/60 bg-paper px-4 py-3 text-left transition-colors hover:bg-paper-dim"
             >
               <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-rec">
@@ -290,25 +239,21 @@ export function Recorder({
               </span>
             </button>
             <UploadDrop
-              onPicked={(url, file) => {
-                blobRef.current = file;
-                setAudioUrl(url);
-                setMode("review");
-              }}
+              onPicked={(_url, file) => send({ type: "PICKED", file })}
             />
-            {micError && (
-              <p className="font-mono text-[11px] text-rec" role="alert">
-                couldn't reach the microphone — check permissions, or upload a
-                file instead.
-              </p>
-            )}
           </div>
         )}
 
-        {mode === "record" && (
+        {mode === "recording" && (
           <div className="space-y-4">
             <canvas
-              ref={canvasRef}
+              ref={(canvas) => {
+                if (!canvas) return;
+                const sub = inputActor.subscribe((snap) =>
+                  drawTrace(canvas, snap.context.trace),
+                );
+                return () => sub.unsubscribe();
+              }}
               width={272}
               height={56}
               className="w-full rounded-sm bg-paper-dim/70"
@@ -318,7 +263,7 @@ export function Recorder({
               listening…
             </p>
             <button
-              onClick={finishRecording}
+              onClick={() => send({ type: "STOP" })}
               className="mx-auto flex size-14 cursor-pointer items-center justify-center rounded-full border-2 border-rec-deep bg-rec transition-transform duration-150 hover:scale-105"
               aria-label="stop recording"
             >
@@ -327,14 +272,45 @@ export function Recorder({
           </div>
         )}
 
-        {mode === "review" && audioUrl && (
+        {mode === "micDenied" && (
+          <div className="space-y-3">
+            <p className="font-hand text-2xl leading-tight text-inkbrown">
+              the microphone said no
+            </p>
+            <p className="font-mono text-[11px] text-rec" role="alert">
+              check browser permissions, or upload a file instead.
+            </p>
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => send({ type: "RETRY" })}
+                className="cursor-pointer rounded-sm bg-inkbrown px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-paper transition-colors hover:bg-shell"
+              >
+                try again
+              </button>
+              <button
+                onClick={() => send({ type: "BACK" })}
+                className="cursor-pointer font-mono text-[10px] uppercase tracking-widest text-shell underline-offset-2 hover:underline"
+              >
+                ← upload instead
+              </button>
+            </div>
+          </div>
+        )}
+
+        {mode === "reviewing" && audioUrl && (
           <div className="space-y-4">
             <p className="font-hand text-2xl leading-tight text-inkbrown">
               have a listen back
             </p>
             <div className="flex items-center gap-3">
               <button
-                onClick={togglePreview}
+                onClick={() =>
+                  playerActor.send({
+                    type: "PLAY",
+                    key: "preview",
+                    url: audioUrl,
+                  })
+                }
                 aria-label={previewing ? "pause" : "play"}
                 className="flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 border-shell-deep/60 bg-inkbrown transition-colors hover:bg-shell"
               >
@@ -344,7 +320,7 @@ export function Recorder({
                     <span className="h-3.5 w-1 bg-paper" />
                   </span>
                 ) : (
-                  <span className="ml-0.5 border-y-[7px] border-l-[11px] border-y-transparent border-l-paper" />
+                  <span className="ml-0.5 border-y-[7px] border-l-11 border-y-transparent border-l-paper" />
                 )}
               </button>
               <span className="font-mono text-[10px] uppercase tracking-widest text-shell">
@@ -354,9 +330,8 @@ export function Recorder({
             <div className="flex items-center justify-between border-t border-shell/30 pt-3">
               <button
                 onClick={() => {
-                  stopPreview();
-                  setAudioUrl(null);
-                  setMode("choose");
+                  playerActor.send({ type: "STOP" });
+                  send({ type: "RETAKE" });
                 }}
                 className="cursor-pointer font-mono text-[10px] uppercase tracking-widest text-shell underline-offset-2 hover:underline"
               >
@@ -364,8 +339,8 @@ export function Recorder({
               </button>
               <button
                 onClick={() => {
-                  stopPreview();
-                  setMode("place");
+                  playerActor.send({ type: "STOP" });
+                  send({ type: "ACCEPT" });
                 }}
                 className="cursor-pointer rounded-sm bg-inkbrown px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-paper transition-colors hover:bg-shell"
               >
@@ -375,52 +350,12 @@ export function Recorder({
           </div>
         )}
 
-        {mode === "details" && (
-          <div className="space-y-4">
-            <label className="block">
-              <span className="font-mono text-[10px] uppercase tracking-widest text-shell">
-                name this sound
-              </span>
-              <input
-                autoFocus
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && save()}
-                placeholder="tram bells at dusk"
-                maxLength={40}
-                className="mt-1 w-full border-b-2 border-shell/40 bg-transparent pb-1 font-hand text-2xl text-inkbrown outline-none placeholder:text-shell/50 focus:border-inkbrown"
-              />
-            </label>
-            {draft && (
-              <p className="font-mono text-[10px] text-shell">
-                {draft.lat.toFixed(4)}°N {draft.lng.toFixed(4)}°E ·{" "}
-                {new Date().toLocaleDateString("en-GB", {
-                  day: "2-digit",
-                  month: "short",
-                  year: "numeric",
-                })}
-              </p>
-            )}
-            <div className="flex items-center justify-between border-t border-shell/30 pt-3">
-              <button
-                onClick={() => setMode("place")}
-                className="cursor-pointer font-mono text-[10px] uppercase tracking-widest text-shell underline-offset-2 hover:underline"
-              >
-                ← move pin
-              </button>
-              <button
-                onClick={save}
-                disabled={!title.trim() || saving}
-                className="cursor-pointer rounded-sm bg-inkbrown px-4 py-1.5 font-mono text-[10px] uppercase tracking-widest text-paper transition-colors hover:bg-shell disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {saving ? "pinning…" : "pin it"}
-              </button>
-            </div>
-            {saveError && (
-              <p className="font-mono text-[11px] text-rec" role="alert">
-                couldn't reach the archive — your take is safe, try again.
-              </p>
-            )}
+        {mode === "saving" && (
+          <div className="py-4 text-center">
+            <p className="font-hand text-2xl text-inkbrown">pinning…</p>
+            <p className="mt-1 font-mono text-[10px] uppercase tracking-widest text-shell">
+              filing your recording in the archive
+            </p>
           </div>
         )}
 
@@ -434,16 +369,5 @@ export function Recorder({
         )}
       </div>
     </section>
-  );
-}
-
-function CancelLink({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="mt-3 cursor-pointer font-mono text-[10px] uppercase tracking-widest text-shell underline-offset-2 hover:underline"
-    >
-      cancel
-    </button>
   );
 }

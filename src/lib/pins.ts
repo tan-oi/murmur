@@ -4,4 +4,5 @@ export type SoundPin = {
   lng: number;
   lat: number;
   audioUrl: string;
+  createdAt: Date | string;
 };
