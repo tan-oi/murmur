@@ -1,6 +1,6 @@
 import { createActor, setup, type ActorRefFrom } from "xstate";
 import { inputMachine } from "./input";
-import { playerMachine } from "./user";
+import { playerMachine } from "./player";
 
 /* Supervisor: no states of its own — it exists to keep the long-lived
    children alive (root-level invoke = "run while I'm alive") and give

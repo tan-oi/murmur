@@ -2,9 +2,6 @@ import Supercluster from "supercluster";
 import type { SoundPin } from "./pins";
 
 export type ClusterPoint = Supercluster.PointFeature<{ pin: SoundPin }>;
-export type ClusterOrPoint = ReturnType<
-  Supercluster<{ pin: SoundPin }>["getClusters"]
->[number];
 
 export function buildClusterIndex(pins: SoundPin[]) {
   const index = new Supercluster<{ pin: SoundPin }>({
